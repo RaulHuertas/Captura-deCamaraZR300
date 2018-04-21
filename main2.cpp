@@ -14,6 +14,7 @@
 #include "rs_sdk.h"
 #include <signal.h>
 #include "opencv2/opencv.hpp"
+#include <fcntl.h>
 
 using namespace std;
 using namespace rs::core;
@@ -83,7 +84,8 @@ int main(int argc, char *argv[])
           (char *)&fisheye_serveraddr.sin_addr.s_addr, fisheye_server->h_length);
     fisheye_serveraddr.sin_port = htons(fisheye_portno);
     fisheye_serverlen = sizeof(fisheye_serveraddr);
-
+    int flags = fcntl(fisheye_sockfd, F_GETFL, 0);
+    fcntl(fisheye_sockfd, F_SETFL, flags | O_NONBLOCK);
 
     color_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (color_sockfd < 0){
@@ -100,13 +102,14 @@ int main(int argc, char *argv[])
           (char *)&color_serveraddr.sin_addr.s_addr, color_server->h_length);
     color_serveraddr.sin_port = htons(color_portno);
     color_serverlen = sizeof(color_serveraddr);
-
+    flags = fcntl(color_sockfd, F_GETFL, 0);
+    fcntl(color_sockfd, F_SETFL, flags | O_NONBLOCK);
 
 
     rs::context ctx;
     if(ctx.get_device_count() == 0) throw std::runtime_error("No device detected. Is it plugged in?");
     rs::device & dev = *ctx.get_device(0);
-    dev.enable_stream(rs::stream::depth, rs::preset::best_quality);
+    dev.enable_stream(rs::stream::depth, rs::preset::highest_framerate);
     dev.enable_stream(rs::stream::color, rs::preset::highest_framerate);
     dev.enable_stream(rs::stream::fisheye, rs::preset::highest_framerate);
     dev.start();
@@ -137,6 +140,17 @@ int main(int argc, char *argv[])
         dev.get_option_range(rs::option::f200_laser_power, min, max, step);
         dev.set_option(rs::option::f200_laser_power, max);
     }
+
+    if (dev.supports_option(rs::option::color_enable_auto_exposure))
+    {
+        dev.set_option(rs::option::color_enable_auto_exposure, 1.f);
+    }
+    if (dev.supports_option(rs::option::color_enable_auto_white_balance))
+    {
+        dev.set_option(rs::option::color_enable_auto_white_balance, 1.f);
+    }
+    dev.set_option(rs::option::fisheye_color_auto_exposure, 1.f);
+
 
 
     int depth_width = dev.get_stream_width(rs::stream::depth);
@@ -206,6 +220,7 @@ int main(int argc, char *argv[])
 
     bool transmit_fisheye = fisheye_portno!=0;
     bool transmit_color = color_portno!=0;
+//    bool transmit_color = false;
     while(terminar==0){
 //        qulonglong actualTime = QDateTime::currentMSecsSinceEpoch();
 //        if((actualTime-startTime)>20000){
@@ -267,8 +282,6 @@ int main(int argc, char *argv[])
             bool fisheyeMapped = false;
             if(minDepth!=65535){
                 float minRealDepth = minDepth*depthScale;
-
-
                 if(projection_->map_depth_to_color(static_cast<int32_t>(depth_coordinates.size()), depth_coordinates.data(), mapped_color_coordinates.data()) < status_no_error)
                 {
                     #ifdef QT_DEBUG
@@ -305,10 +318,10 @@ int main(int argc, char *argv[])
                 std::vector<uchar> compressedBuffer;
                 std::vector<int> compressParams(2);
                 compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
-                compressParams[1] = 85;//default(95) 0-100
+                compressParams[1] = 50;//default(95) 0-100
                 int fishEyeSendFormat  = (int)fisheye_format;
+                //auto resultCompress = imencode(".jpg", fisheyMat, compressedBuffer, compressParams);
                 auto resultCompress = imencode(".jpg", fisheyMat, compressedBuffer, compressParams);
-
                 if(!resultCompress){
                     transmitirPorUDP(
                         fisheye_width, fisheye_height,
@@ -332,18 +345,18 @@ int main(int argc, char *argv[])
 
             }
             if(transmit_color){
-                Mat colorMat(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                Mat colorMat(Size(fisheye_width, fisheye_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
                 std::vector<uchar> compressedBuffer;
                 std::vector<int> compressParams(2);
                 compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
-                compressParams[1] = 85;//default(95) 0-100
+                compressParams[1] = 50;//default(95) 0-100
                 int colorSendFormat  = (int)color_format;
                 auto resultCompress = imencode(".jpg", colorMat, compressedBuffer, compressParams);
 
                 if(!resultCompress){
                     transmitirPorUDP(
                         color_width, color_height,
-                        (int)color_format,
+                        colorSendFormat,
                         color_image->query_data(),
                         color_width*color_height*3,
                         minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,
@@ -353,7 +366,7 @@ int main(int argc, char *argv[])
                     colorSendFormat+=4;
                     transmitirPorUDP(
                         color_width, color_height,
-                        (int)color_format,
+                        colorSendFormat,
                         compressedBuffer.data(),
                         compressedBuffer.size(),
                         minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,

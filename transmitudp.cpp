@@ -2,7 +2,7 @@
 #include <vector>
 #include <sys/types.h>
 #include <string.h>
-constexpr int sizePaquetes = 2*2048;
+constexpr int sizePaquetes = 4*2048;
 
 //Los campos a enviar con cada paquete son:
 // - offsetDatos
