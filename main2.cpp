@@ -1,6 +1,5 @@
 #include <vector>
 
-
 #include <network_utils.hpp>
 #include <QCoreApplication>
 #include <stdlib.h>
@@ -14,6 +13,7 @@
 #include "rs_sdk.h"
 #include <signal.h>
 #include "opencv2/opencv.hpp"
+#include "video_utils.hpp"
 #include <fcntl.h>
 
 using namespace std;
@@ -42,6 +42,10 @@ void errorPrograma(char *msg) {
 
 int main(int argc, char *argv[])
 {
+
+    QCoreApplication a(argc, argv);
+
+     terminar = 0;
     char* hostname;
 
     int fisheye_sockfd, fisheye_portno;
@@ -107,7 +111,14 @@ int main(int argc, char *argv[])
 
 
     rs::context ctx;
-    if(ctx.get_device_count() == 0) throw std::runtime_error("No device detected. Is it plugged in?");
+    if(ctx.get_device_count() == 0){
+        cout<<"Dispositivo no detectado"<<endl;
+        exit(0);
+    }
+    //throw std::runtime_error("No device detected. Is it plugged in?");
+
+
+
     rs::device & dev = *ctx.get_device(0);
     dev.enable_stream(rs::stream::depth, rs::preset::highest_framerate);
     dev.enable_stream(rs::stream::color, rs::preset::highest_framerate);
@@ -150,7 +161,7 @@ int main(int argc, char *argv[])
         dev.set_option(rs::option::color_enable_auto_white_balance, 1.f);
     }
     dev.set_option(rs::option::fisheye_color_auto_exposure, 1.f);
-
+    dev.set_option(rs::option::fisheye_color_auto_exposure_mode, 2);
 
 
     int depth_width = dev.get_stream_width(rs::stream::depth);
@@ -160,11 +171,15 @@ int main(int argc, char *argv[])
     int fisheye_width = dev.get_stream_width(rs::stream::fisheye);
     int fisheye_height = dev.get_stream_height(rs::stream::fisheye);
     auto fisheye_format = dev.get_stream_format(rs::stream::fisheye);
+    auto fisheye_fps = dev.get_stream_framerate(rs::stream::fisheye);
     int fisheye_pixel_size = 1;
     int color_width = dev.get_stream_width(rs::stream::color);
     int color_height = dev.get_stream_height(rs::stream::color);
     auto color_format = dev.get_stream_format(rs::stream::color);
+    auto color_fps = dev.get_stream_framerate(rs::stream::color);
     int color_pixel_size =  3;
+
+    video_start(fisheye_width, fisheye_height, fisheye_fps, color_width, color_height, color_fps);
 
     vector<point3dF32> depth_coordinates(1);
     point3dF32& minDepthPixelCoords = depth_coordinates[0];
@@ -220,6 +235,8 @@ int main(int argc, char *argv[])
 
     bool transmit_fisheye = fisheye_portno!=0;
     bool transmit_color = color_portno!=0;
+    bool record_fisheye = true;
+    bool record_color = true;
 //    bool transmit_color = false;
     while(terminar==0){
 //        qulonglong actualTime = QDateTime::currentMSecsSinceEpoch();
@@ -312,9 +329,12 @@ int main(int argc, char *argv[])
                 std::cout<<"FISHEYE, Y: "<<mapped_fisheye_coordinates[0].y<<endl;
                 #endif //QT_DEBUG
             }
+            std::unique_ptr<Mat> fisheyeCVMat = nullptr;
             if(transmit_fisheye){
                 //comprimir
-                Mat fisheyMat(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
+                fisheyeCVMat = std::make_unique<Mat>(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
+                Mat& fisheyMat = *fisheyeCVMat.get();
+//                Mat fisheyMat(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
                 std::vector<uchar> compressedBuffer;
                 std::vector<int> compressParams(2);
                 compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
@@ -344,15 +364,26 @@ int main(int argc, char *argv[])
                 }
 
             }
+            if(record_fisheye){
+                if(fisheyeCVMat==nullptr){
+                    fisheyeCVMat = std::make_unique<Mat>(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
+
+                }
+                video_addFrame_fisheye(*fisheyeCVMat.get());
+            }
+
+
+            std::unique_ptr<Mat> colorCVMat = nullptr;
             if(transmit_color){
-                Mat colorMat(Size(fisheye_width, fisheye_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                colorCVMat = std::make_unique<Mat>(Size(color_width, color_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                Mat& colorMat = *colorCVMat.get();
+                cv::cvtColor(*colorCVMat.get(), *colorCVMat.get(), cv::COLOR_BGR2RGB);
                 std::vector<uchar> compressedBuffer;
                 std::vector<int> compressParams(2);
                 compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
                 compressParams[1] = 50;//default(95) 0-100
                 int colorSendFormat  = (int)color_format;
                 auto resultCompress = imencode(".jpg", colorMat, compressedBuffer, compressParams);
-
                 if(!resultCompress){
                     transmitirPorUDP(
                         color_width, color_height,
@@ -373,19 +404,22 @@ int main(int argc, char *argv[])
                         color_sockfd, color_serveraddr, color_serverlen
                     );
                 }
-
-
-
-
             }
+            if(record_color){
+                if(colorCVMat==nullptr){
+                    colorCVMat = std::make_unique<Mat>(Size(color_width, color_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                    cv::cvtColor(*colorCVMat.get(), *colorCVMat.get(), cv::COLOR_BGR2RGB);
+                }
+                video_addFrame_color(*colorCVMat.get());
+            }
+
 
         }
 
-
-
-
+        video_checkTime(fisheye_width, fisheye_height, fisheye_fps, color_width, color_height, color_fps, QDateTime::currentMSecsSinceEpoch());
     }
 
+    video_close();
     #ifdef QT_DEBUG
     std::cout<<"Fin de la transmisión"<<endl;
     #endif //QT_DEBUG
