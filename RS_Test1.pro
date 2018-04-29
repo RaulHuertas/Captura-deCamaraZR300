@@ -18,7 +18,8 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += main.cpp \
     transmitudp.cpp \
     video_utils.cpp \
-    storage.cpp
+    storage.cpp \
+    uvccamera.cpp
 SOURCES += main2.cpp
 
 
