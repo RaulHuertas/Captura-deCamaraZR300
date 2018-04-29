@@ -66,9 +66,9 @@ int main(int argc, char *argv[])
 
     auto execName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
     if(argc!=5){
-            cout<<("Argumentos del programa invalidos\n");
-            cout<<(QString("Invocarlo como: ")+execName+QString(" <direccionDestino>  <puertoDestinoFISHEYE> <puertoDestinoCOLOR>\n")).toStdString();
-            exit(EXIT_FAILURE);
+        cout<<("Argumentos del programa invalidos\n");
+        cout<<(QString("Invocarlo como: ")+execName+QString(" <direccionDestino>  <puertoDestinoFISHEYE> <puertoDestinoCOLOR>\n")).toStdString();
+        exit(EXIT_FAILURE);
     }
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -211,18 +211,18 @@ int main(int argc, char *argv[])
 
     rs::core::extrinsics extrin = rs::utils::convert_extrinsics(dev.get_extrinsics(rs::stream::depth, rs::stream::color));
     auto projection_ = rs::utils::get_unique_ptr_with_releaser(projection_interface::create_instance(
-                                        &colorIntrinsics2,
-                                        &depthIntrinsics2,
-                                        &extrin
-                            ));
+                                                                   &colorIntrinsics2,
+                                                                   &depthIntrinsics2,
+                                                                   &extrin
+                                                                   ));
 
 
     rs::core::extrinsics extrinDtoF = rs::utils::convert_extrinsics(dev.get_extrinsics(rs::stream::depth, rs::stream::fisheye));
     auto projectionDtoF_ = rs::utils::get_unique_ptr_with_releaser(projection_interface::create_instance(
-                                        &fisheyeIntrinsics2,
-                                        &depthIntrinsics2,
-                                        &extrinDtoF
-                            ));
+                                                                       &fisheyeIntrinsics2,
+                                                                       &depthIntrinsics2,
+                                                                       &extrinDtoF
+                                                                       ));
 
 
     cout<<"DEPTH get_stream_width:"<<dev.get_stream_width(rs::stream::depth)<<endl;
@@ -261,12 +261,21 @@ int main(int argc, char *argv[])
     bool record_fisheye = true;
     bool record_color = true;
 
-    //WEBCAM
+    int tx_fishEye_dly=0;
+    int tx_fishEye_dly_ctr=0;
+    qulonglong tx_fishEye_lastRex=0;
+
+    int tx_color_dly=0;
+    int tx_color_dly_ctr=0;
+    qulonglong tx_color_lastRex=0;
+
     unsigned char rcvBuffer[4];
 
+    qulonglong thisIterationTime = QDateTime::currentMSecsSinceEpoch();
     std::thread t([&]() {
         while (true)
         {
+            thisIterationTime = QDateTime::currentMSecsSinceEpoch();
 
             proc_mutex()->lock();
             if(proc_queue()->size()<=0){
@@ -282,7 +291,6 @@ int main(int argc, char *argv[])
             auto& depth_image = frameAProcesar.depth_image;
             auto& fisheye_image = frameAProcesar.fisheye_image;
             auto& color_image = frameAProcesar.color_image;
-            auto& webcam_image = frameAProcesar.imagenExtra;
 
             if(
                     (depth_image==nullptr) ||
@@ -319,9 +327,9 @@ int main(int argc, char *argv[])
                     float minRealDepth = minDepth*depthScale;
                     if(projection_->map_depth_to_color(static_cast<int32_t>(depth_coordinates.size()), depth_coordinates.data(), mapped_color_coordinates.data()) < status_no_error)
                     {
-                        #ifdef QT_DEBUG
+#ifdef QT_DEBUG
                         cerr<<"failed to map the depth coordinates to color" << endl;
-                        #endif //QT_DEBUG
+#endif //QT_DEBUG
                         colorMapped = false;
                         mapped_color_coordinates[0].x = -1.0f;
                         mapped_color_coordinates[0].y = -1.0f;
@@ -339,8 +347,8 @@ int main(int argc, char *argv[])
                     }else{
                         fisheyeMapped = true;
                     }
-            #ifdef QT_DEBUG
-            //                std::cout<<"Minima profundidad: "<<minRealDepth<<"m."<<endl;
+#ifdef QT_DEBUG
+                    //                std::cout<<"Minima profundidad: "<<minRealDepth<<"m."<<endl;
                     //                std::cout<<"COLOR, X: "<<mapped_color_coordinates[0].x<<endl;
                     //                std::cout<<"COLOR, Y: "<<mapped_color_coordinates[0].y<<endl;
                     //                std::cout<<"FISHEYE, X: "<<mapped_fisheye_coordinates[0].x<<endl;
@@ -348,7 +356,7 @@ int main(int argc, char *argv[])
 #endif //QT_DEBUG
                 }
                 std::unique_ptr<Mat> fisheyeCVMat = nullptr;
-                if(transmit_fisheye){
+                if(transmit_fisheye && (tx_fishEye_dly_ctr==0) ){
                     //comprimir
                     fisheyeCVMat = std::make_unique<Mat>(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
                     Mat& fisheyMat = *fisheyeCVMat.get();
@@ -382,6 +390,7 @@ int main(int argc, char *argv[])
                     }
 
                 }
+
                 if(record_fisheye){
                     if(fisheyeCVMat==nullptr){
                         fisheyeCVMat = std::make_unique<Mat>(Size(fisheye_width, fisheye_height), CV_8U, const_cast<void*>(fisheye_image->query_data()), Mat::AUTO_STEP);
@@ -389,63 +398,83 @@ int main(int argc, char *argv[])
                     }
                     video_addFrame_fisheye(*fisheyeCVMat.get());
                 }
-            //Versi hay comandosderecepcion
-            int bytesRecibidos = recv(fisheye_sockfd, &rcvBuffer[0], sizeof(rcvBuffer), 0);
-            if(bytesRecibidos==sizeof(rcvBuffer)){
-                if(rcvBuffer[0] == 0xFF){
-                    transmit_fisheye = rcvBuffer[3];
-                }
-            }
 
-            //COLOR
-            std::unique_ptr<Mat> colorCVMat = nullptr;
-            if(transmit_color){
-                colorCVMat = std::make_unique<Mat>(Size(color_width, color_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
-                Mat& colorMat = *colorCVMat.get();
-                cv::cvtColor(*colorCVMat.get(), *colorCVMat.get(), cv::COLOR_BGR2RGB);
-                std::vector<uchar> compressedBuffer;
-                std::vector<int> compressParams(2);
-                compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
-                compressParams[1] = 25;//default(95) 0-100
-                int colorSendFormat  = (int)color_format;
-                auto resultCompress = imencode(".jpg", colorMat, compressedBuffer, compressParams);
-                if(!resultCompress){
-                    transmitirPorUDP(
-                                color_width, color_height,
-                                colorSendFormat,
-                                color_image->query_data(),
-                                color_width*color_height*3,
-                                minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,
-                            color_sockfd, color_serveraddr, color_serverlen
-                            );
+                //Versi hay comandosderecepcion
+                int bytesRecibidos = recv(fisheye_sockfd, &rcvBuffer[0], sizeof(rcvBuffer), 0);
+                if(bytesRecibidos==sizeof(rcvBuffer)){
+                    if(rcvBuffer[0] == 0xFF){
+                        //transmit_fisheye = rcvBuffer[3];
+                        tx_fishEye_lastRex = thisIterationTime;
+                    }
+                }
+                if((thisIterationTime-tx_fishEye_lastRex)>500){
+                    tx_fishEye_dly = 32;
                 }else{
-                    colorSendFormat+=4;
-                    transmitirPorUDP(
-                                color_width, color_height,
-                                colorSendFormat,
-                                compressedBuffer.data(),
-                                compressedBuffer.size(),
-                                minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,
-                            color_sockfd, color_serveraddr, color_serverlen
-                            );
+                    tx_fishEye_dly = 1;
                 }
-            }
-            if(record_color){
-                if(colorCVMat==nullptr){
+                tx_fishEye_dly_ctr++;
+                tx_fishEye_dly_ctr%=tx_fishEye_dly;
+#ifdef QT_DEBUG
+                cout<<"tx_fishEye_dly: "<<tx_fishEye_dly<<endl;
+#endif //QT_DEBUG
+
+                //COLOR
+                std::unique_ptr<Mat> colorCVMat = nullptr;
+                if(transmit_color && (tx_color_dly_ctr==0)){
                     colorCVMat = std::make_unique<Mat>(Size(color_width, color_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                    Mat& colorMat = *colorCVMat.get();
                     cv::cvtColor(*colorCVMat.get(), *colorCVMat.get(), cv::COLOR_BGR2RGB);
+                    std::vector<uchar> compressedBuffer;
+                    std::vector<int> compressParams(2);
+                    compressParams[0] = cv::IMWRITE_JPEG_QUALITY;
+                    compressParams[1] = 25;//default(95) 0-100
+                    int colorSendFormat  = (int)color_format;
+                    auto resultCompress = imencode(".jpg", colorMat, compressedBuffer, compressParams);
+                    if(!resultCompress){
+                        transmitirPorUDP(
+                                    color_width, color_height,
+                                    colorSendFormat,
+                                    color_image->query_data(),
+                                    color_width*color_height*3,
+                                    minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,
+                                color_sockfd, color_serveraddr, color_serverlen
+                                );
+                    }else{
+                        colorSendFormat+=4;
+                        transmitirPorUDP(
+                                    color_width, color_height,
+                                    colorSendFormat,
+                                    compressedBuffer.data(),
+                                    compressedBuffer.size(),
+                                    minDepth, mapped_fisheye_coordinates[0].x, mapped_color_coordinates[0].y, depthScale,
+                                color_sockfd, color_serveraddr, color_serverlen
+                                );
+                    }
                 }
-                video_addFrame_color(*colorCVMat.get());
-            }
-            bytesRecibidos = recv(color_sockfd, &rcvBuffer[0], sizeof(rcvBuffer), 0);
-            if(bytesRecibidos==sizeof(rcvBuffer)){
-                if(rcvBuffer[0] == 0xFF){
-                    transmit_color = rcvBuffer[3];
+                if(record_color){
+                    if(colorCVMat==nullptr){
+                        colorCVMat = std::make_unique<Mat>(Size(color_width, color_height), CV_8UC3, const_cast<void*>(color_image->query_data()), Mat::AUTO_STEP);
+                        cv::cvtColor(*colorCVMat.get(), *colorCVMat.get(), cv::COLOR_BGR2RGB);
+                    }
+                    video_addFrame_color(*colorCVMat.get());
                 }
-            }
-
-
-
+                bytesRecibidos = recv(color_sockfd, &rcvBuffer[0], sizeof(rcvBuffer), 0);
+                if(bytesRecibidos==sizeof(rcvBuffer)){
+                    if(rcvBuffer[0] == 0xFF){
+                        //transmit_color = rcvBuffer[3];
+                        tx_color_lastRex = thisIterationTime;
+                    }
+                }
+                if((thisIterationTime-tx_color_lastRex)>500){
+                    tx_color_dly = 32;
+                }else{
+                    tx_color_dly = 1;
+                }
+                tx_color_dly_ctr++;
+                tx_color_dly_ctr%=tx_color_dly;
+#ifdef QT_DEBUG
+                cout<<"tx_color_dly: "<<tx_color_dly<<endl;
+#endif //QT_DEBUG
             }
 
             video_checkTime(fisheye_width, fisheye_height, fisheye_fps, color_width, color_height, color_fps, QDateTime::currentMSecsSinceEpoch());
@@ -456,36 +485,36 @@ int main(int argc, char *argv[])
 
     while(terminar==0){
 
-        #ifdef QT_DEBUG
+#ifdef QT_DEBUG
         auto loopStartTime = QDateTime::currentMSecsSinceEpoch();
-        #endif //QT_DEBUG
+#endif //QT_DEBUG
         dev.wait_for_frames();
 
 
         CuadroRef depth_image = get_shared_ptr_with_releaser(image_interface::create_instance_from_raw_data(
-                                                                                           &depth_info,
-                                                                                           {dev.get_frame_data(rs::stream::depth), nullptr},
-                                                                                           stream_type::depth,
-                                                                                           image_interface::flag::any,
-                                                                                           dev.get_frame_timestamp(rs::stream::depth),
-                                                                                           dev.get_frame_number(rs::stream::depth))
-                                                        );
+                                                                 &depth_info,
+        {dev.get_frame_data(rs::stream::depth), nullptr},
+                                                                 stream_type::depth,
+                                                                 image_interface::flag::any,
+                                                                 dev.get_frame_timestamp(rs::stream::depth),
+                                                                 dev.get_frame_number(rs::stream::depth))
+                                                             );
         CuadroRef fisheye_image = get_shared_ptr_with_releaser(image_interface::create_instance_from_raw_data(
-                                                                                           &fisheye_info,
-                                                                                           {dev.get_frame_data(rs::stream::fisheye), nullptr},
-                                                                                           stream_type::fisheye,
-                                                                                           image_interface::flag::any,
-                                                                                           dev.get_frame_timestamp(rs::stream::fisheye),
-                                                                                           dev.get_frame_number(rs::stream::fisheye))
-                                                        );
+                                                                   &fisheye_info,
+        {dev.get_frame_data(rs::stream::fisheye), nullptr},
+                                                                   stream_type::fisheye,
+                                                                   image_interface::flag::any,
+                                                                   dev.get_frame_timestamp(rs::stream::fisheye),
+                                                                   dev.get_frame_number(rs::stream::fisheye))
+                                                               );
         CuadroRef color_image = get_shared_ptr_with_releaser(        image_interface::create_instance_from_raw_data(
-                                                                                            &color_info,
-                                                                                            {dev.get_frame_data(rs::stream::color), nullptr},
-                                                                                            stream_type::color,
-                                                                                            image_interface::flag::any,
-                                                                                             dev.get_frame_timestamp(rs::stream::color),
-                                                                                            dev.get_frame_number(rs::stream::color))
-                                                        );
+                                                                         &color_info,
+        {dev.get_frame_data(rs::stream::color), nullptr},
+                                                                         stream_type::color,
+                                                                         image_interface::flag::any,
+                                                                         dev.get_frame_timestamp(rs::stream::color),
+                                                                         dev.get_frame_number(rs::stream::color))
+                                                                     );
 
 
         CuadroCamaraWeb webcamNewFrame;
@@ -494,17 +523,17 @@ int main(int argc, char *argv[])
         std::lock_guard<std::mutex> lock(*proc_mutex());
         proc_queue()->emplace_back(depth_image, fisheye_image, color_image, webcamNewFrame);
 
-        #ifdef QT_DEBUG
+#ifdef QT_DEBUG
         //auto loopStartTime = QDateTime::currentMSecsSinceEpoch();
         auto loopEndTime = QDateTime::currentMSecsSinceEpoch();
-        cout<<"Loop time: "<<(loopEndTime-loopStartTime)<<endl;
-        #endif //QT_DEBUG
+        //cout<<"Loop time: "<<(loopEndTime-loopStartTime)<<endl;
+#endif //QT_DEBUG
     }
 
     video_close();
-    #ifdef QT_DEBUG
+#ifdef QT_DEBUG
     std::cout<<"Fin de la transmisión"<<endl;
-    #endif //QT_DEBUG
+#endif //QT_DEBUG
 
     dev.stop();
 
